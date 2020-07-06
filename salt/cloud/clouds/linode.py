@@ -8,10 +8,29 @@ The Linode cloud module is used to control access to the Linode VPS system.
 Use of this module only requires the ``apikey`` parameter. However, the default root password for new instances
 also needs to be set. The password needs to be 8 characters and contain lowercase, uppercase, and numbers.
 
+You can target a specific version of the Linode API with the ``apiversion`` parameter. The default is ``v3``.
+
+Note: APIv3 usage is deprecated and will be removed in a future release in favor of APIv4. To move to APIv4 now,
+set the ``apiversion`` parameter in your provider configuration to ``v4``.
+
 Set up the cloud configuration at ``/etc/salt/cloud.providers`` or ``/etc/salt/cloud.providers.d/linode.conf``:
 
 .. code-block:: yaml
+    my-linode-provider:
+      apikey: f4ZsmwtB1c7f85Jdu43RgXVDFlNjuJaeIYV8QMftTqKScEB2vSosFSr...
+      password: F00barbaz
+      driver: linode
+      apiversion: v4
 
+    linode-profile:
+      provider: my-linode-provider
+      size: g6-standard-1
+      image: linode/centos7
+      location: eu-west
+
+For use with APIv3 (deprecated):
+
+.. code-block:: yaml
     my-linode-provider:
       apikey: f4ZsmwtB1c7f85Jdu43RgXVDFlNjuJaeIYV8QMftTqKScEB2vSosFSr...
       password: F00barbaz
@@ -23,6 +42,8 @@ Set up the cloud configuration at ``/etc/salt/cloud.providers`` or ``/etc/salt/c
       image: CentOS 7
       location: London, England, UK
 
+:maintainer: Charles Kenney <ckenney@linode.com>
+:maintainer: Phillip Campbell <pcampbell@linode.com>
 '''
 
 # Import Python Libs
@@ -34,6 +55,7 @@ import time
 import datetime
 
 # Import Salt Libs
+import salt.utils.http
 import salt.config as config
 from salt.ext import six
 from salt.ext.six.moves import range
@@ -88,13 +110,12 @@ __virtualname__ = 'linode'
 # Only load in this module if the Linode configurations are in place
 def __virtual__():
     '''
-    Check for Linode configs.
+    Check for Linode configurations.
     '''
     if get_configured_provider() is False:
         return False
 
     return __virtualname__
-
 
 def get_configured_provider():
     '''
@@ -123,19 +144,25 @@ def avail_images(call=None):
             'The avail_images function must be called with -f or --function.'
         )
 
-    response = _query('avail', 'distributions')
-
     ret = {}
-    for item in response['DATA']:
-        name = item['LABEL']
-        ret[name] = item
+
+    if _is_api_v3():
+        response = _query_v3('avail', 'distributions')
+        images = response.get('DATA', [])
+        for image in images:
+            ret[image['LABEL']] = image
+    else:
+        response = _query(path='/images')
+        images = response.get('data', [])
+        for image in images:
+            ret[image['id']] = image
 
     return ret
 
 
 def avail_locations(call=None):
     '''
-    Return available Linode datacenter locations.
+    Return available Linode datacenter locations/regions.
 
     CLI Example:
 
@@ -149,19 +176,23 @@ def avail_locations(call=None):
             'The avail_locations function must be called with -f or --function.'
         )
 
-    response = _query('avail', 'datacenters')
-
     ret = {}
-    for item in response['DATA']:
-        name = item['LOCATION']
-        ret[name] = item
+
+    if _is_api_v3():
+        response = _query_v3('avail', 'datacenters')
+        for location in response['DATA']:
+            ret[location['LOCATION']] = location
+    else:
+        response = _query(path='/regions')
+        for region in response['data']:
+            ret[region['id']] = region
 
     return ret
 
 
 def avail_sizes(call=None):
     '''
-    Return available Linode sizes.
+    Return all available linode instance types/sizes.
 
     CLI Example:
 
@@ -175,14 +206,35 @@ def avail_sizes(call=None):
             'The avail_locations function must be called with -f or --function.'
         )
 
-    response = _query('avail', 'LinodePlans')
-
     ret = {}
-    for item in response['DATA']:
-        name = item['LABEL']
-        ret[name] = item
+
+    if _is_api_v3():
+        response = _query_v3('avail', 'LinodePlans')
+        for plan in response['DATA']:
+            ret[plan['LABEL']] = plan
+    else:
+        response = _query(path='/linode/types')
+        for instance_type in response['data']:
+            ret[instance_type['id']] = instance_type
 
     return ret
+
+
+def _get_api_version():
+    '''
+    Return the API Version as configured in the provider configuration.
+
+    Defaults to 'v3'.
+    '''
+    return config.get_cloud_config_value(
+        'apiversion', get_configured_provider(), __opts__, search_global=False, default='v3'
+    )
+
+def _is_api_v3(): 
+    '''
+    Return true if APIv3 should be used.
+    '''
+    return _get_api_version() is 'v3'
 
 
 def boot(name=None, kwargs=None, call=None):
@@ -260,7 +312,7 @@ def boot(name=None, kwargs=None, call=None):
             )
 
     # Boot the VM and get the JobID from Linode
-    response = _query('linode', 'boot',
+    response = _query_v3('linode', 'boot',
                       args={'LinodeID': linode_id,
                             'ConfigID': config_id})['DATA']
     boot_job_id = response['JobID']
@@ -317,7 +369,7 @@ def clone(kwargs=None, call=None):
         'PlanID': plan_id
     }
 
-    return _query('linode', 'clone', args=clone_args)
+    return _query_v3('linode', 'clone', args=clone_args)
 
 
 def create(vm_):
@@ -405,7 +457,7 @@ def create(vm_):
 
         # Create Linode
         try:
-            result = _query('linode', 'create', args={
+            result = _query_v3('linode', 'create', args={
                 'PLANID': plan_id,
                 'DATACENTERID': datacenter_id
             })
@@ -598,7 +650,7 @@ def create_config(kwargs=None, call=None):
                    'DiskList': disklist
                   }
 
-    result = _query('linode', 'config.create', args=config_args)
+    result = _query_v3('linode', 'config.create', args=config_args)
 
     return _clean_data(result)
 
@@ -639,7 +691,7 @@ def create_disk_from_distro(vm_, linode_id, swap_size=None):
                    'Label': vm_['name'],
                    'Size': get_disk_size(vm_, swap_size, linode_id)})
 
-    result = _query('linode', 'disk.createfromdistribution', args=kwargs)
+    result = _query_v3('linode', 'disk.createfromdistribution', args=kwargs)
 
     return _clean_data(result)
 
@@ -668,7 +720,7 @@ def create_swap_disk(vm_, linode_id, swap_size=None):
                    'Size': swap_size
                   })
 
-    result = _query('linode', 'disk.create', args=kwargs)
+    result = _query_v3('linode', 'disk.create', args=kwargs)
 
     return _clean_data(result)
 
@@ -697,7 +749,7 @@ def create_data_disk(vm_=None, linode_id=None, data_size=None):
                    'Size': data_size
                   })
 
-    result = _query('linode', 'disk.create', args=kwargs)
+    result = _query_v3('linode', 'disk.create', args=kwargs)
     return _clean_data(result)
 
 
@@ -709,7 +761,7 @@ def create_private_ip(linode_id):
         The ID of the Linode to create the IP address for.
     '''
     kwargs = {'LinodeID': linode_id}
-    result = _query('linode', 'ip.addprivate', args=kwargs)
+    result = _query_v3('linode', 'ip.addprivate', args=kwargs)
 
     return _clean_data(result)
 
@@ -744,7 +796,7 @@ def destroy(name, call=None):
 
     linode_id = get_linode_id_from_name(name)
 
-    response = _query('linode', 'delete', args={'LinodeID': linode_id, 'skipChecks': True})
+    response = _query_v3('linode', 'delete', args={'LinodeID': linode_id, 'skipChecks': True})
 
     __utils__['cloud.fire_event'](
         'event',
@@ -800,7 +852,7 @@ def get_config_id(kwargs=None, call=None):
     if linode_id is None:
         linode_id = get_linode_id_from_name(name)
 
-    response = _query('linode', 'config.list', args={'LinodeID': linode_id})['DATA']
+    response = _query_v3('linode', 'config.list', args={'LinodeID': linode_id})['DATA']
     config_id = {'config_id': response[0]['ConfigID']}
 
     return config_id
@@ -850,7 +902,7 @@ def get_distribution_id(vm_):
     vm\_
         The VM to get the distribution ID for
     '''
-    distributions = _query('avail', 'distributions')['DATA']
+    distributions = _query_v3('avail', 'distributions')['DATA']
     vm_image_name = config.get_cloud_config_value('image', vm_, __opts__)
 
     distro_id = ''
@@ -880,9 +932,9 @@ def get_ips(linode_id=None):
         Limits the IP addresses returned to the specified Linode ID.
     '''
     if linode_id:
-        ips = _query('linode', 'ip.list', args={'LinodeID': linode_id})
+        ips = _query_v3('linode', 'ip.list', args={'LinodeID': linode_id})
     else:
-        ips = _query('linode', 'ip.list')
+        ips = _query_v3('linode', 'ip.list')
 
     ips = ips['DATA']
     ret = {}
@@ -950,7 +1002,7 @@ def get_linode(kwargs=None, call=None):
     if linode_id is None:
         linode_id = get_linode_id_from_name(name)
 
-    result = _query('linode', 'list', args={'LinodeID': linode_id})
+    result = _query_v3('linode', 'list', args={'LinodeID': linode_id})
 
     return result['DATA'][0]
 
@@ -962,7 +1014,7 @@ def get_linode_id_from_name(name):
     name
         The name of the Linode from which to get the Linode ID. Required.
     '''
-    nodes = _query('linode', 'list')['DATA']
+    nodes = _query_v3('linode', 'list')['DATA']
 
     linode_id = ''
     for node in nodes:
@@ -1217,7 +1269,7 @@ def list_nodes_min(call=None):
         )
 
     ret = {}
-    nodes = _query('linode', 'list')['DATA']
+    nodes = _query_v3('linode', 'list')['DATA']
 
     for node in nodes:
         name = node['LABEL']
@@ -1261,7 +1313,7 @@ def reboot(name, call=None):
         )
 
     node_id = get_linode_id_from_name(name)
-    response = _query('linode', 'reboot', args={'LinodeID': node_id})
+    response = _query_v3('linode', 'reboot', args={'LinodeID': node_id})
     data = _clean_data(response)
     reboot_jid = data['JobID']
 
@@ -1348,7 +1400,7 @@ def show_pricing(kwargs=None, call=None):
         )
 
     plan_id = get_plan_id(kwargs={'label': profile['size']})
-    response = _query('avail', 'linodeplans', args={'PlanID': plan_id})['DATA'][0]
+    response = _query_v3('avail', 'linodeplans', args={'PlanID': plan_id})['DATA'][0]
 
     ret = {}
     ret['per_hour'] = response['HOURLY']
@@ -1387,7 +1439,7 @@ def start(name, call=None):
                 'state': 'Running',
                 'msg': 'Machine already running'}
 
-    response = _query('linode', 'boot', args={'LinodeID': node_id})['DATA']
+    response = _query_v3('linode', 'boot', args={'LinodeID': node_id})['DATA']
 
     if _wait_for_job(node_id, response['JobID']):
         return {'state': 'Running',
@@ -1424,7 +1476,7 @@ def stop(name, call=None):
                 'state': 'Stopped',
                 'msg': 'Machine already stopped'}
 
-    response = _query('linode', 'shutdown', args={'LinodeID': node_id})['DATA']
+    response = _query_v3('linode', 'shutdown', args={'LinodeID': node_id})['DATA']
 
     if _wait_for_job(node_id, response['JobID']):
         return {'state': 'Stopped',
@@ -1447,7 +1499,7 @@ def update_linode(linode_id, update_args=None):
     '''
     update_args.update({'LinodeID': linode_id})
 
-    result = _query('linode', 'update', args=update_args)
+    result = _query_v3('linode', 'update', args=update_args)
 
     return _clean_data(result)
 
@@ -1473,7 +1525,7 @@ def _list_linodes(full=False):
     '''
     Helper function to format and parse linode data
     '''
-    nodes = _query('linode', 'list')['DATA']
+    nodes = _query_v3('linode', 'list')['DATA']
     ips = get_ips()
 
     ret = {}
@@ -1502,7 +1554,38 @@ def _list_linodes(full=False):
     return ret
 
 
-def _query(action=None,
+def _query(path=None,
+              method='GET',
+              data=None,
+              params=None,
+              headers={}):
+    '''
+    Make a call to the Linode API.
+    '''
+    provider = get_configured_provider()
+    apiversion = _get_api_version()
+    apikey = config.get_cloud_config_value(
+        'apikey', provider, __opts__, search_global=False
+    )
+
+    headers['Authorization'] = 'Bearer {}'.format(apikey)
+    headers['Content-Type'] = 'application/json'
+    url = 'https://api.linode.com/{}{}'.format(apiversion, path)
+
+    decode = method is not 'DELETE'
+
+    response = salt.utils.http.query(url,
+        method=method,
+        data=data,
+        headers_dict=headers,
+        decode=decode,
+        decode_type='json')
+
+    status = response
+    return response.get('dict', None)
+
+
+def _query_v3(action=None,
            command=None,
            args=None,
            method='GET',
@@ -1602,7 +1685,7 @@ def _wait_for_job(linode_id, job_id, timeout=300, quiet=True):
     iterations = int(timeout / interval)
 
     for i in range(0, iterations):
-        jobs_result = _query('linode',
+        jobs_result = _query_v3('linode',
                              'job.list',
                              args={'LinodeID': linode_id})['DATA']
         if jobs_result[0]['JOBID'] == job_id and jobs_result[0]['HOST_SUCCESS'] == 1:
