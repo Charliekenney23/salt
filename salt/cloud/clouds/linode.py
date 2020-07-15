@@ -319,7 +319,6 @@ class LinodeAPIv4(LinodeAPI):
         path=None,
         method='GET',
         data=None,
-        params=None,
         headers=None
     ):
         '''
@@ -333,35 +332,45 @@ class LinodeAPIv4(LinodeAPI):
 
         if headers is None:
             headers = {}
-
         headers['Authorization'] = 'Bearer {}'.format(apikey)
         headers['Content-Type'] = 'application/json'
+
         url = 'https://api.linode.com/{}{}'.format(apiversion, path)
 
         decode = method != 'DELETE'
-
         result = None
 
-        log.debug("Linode API request: %s", url)
+        log.debug("Linode API request: %s %s", method, url)
+
         if data is not None:
             log.trace("Linode API request body: %s", data)
 
         try:
             result = requests.request(
-                method, url, json=data, headers=headers, params=params
+                method, url, json=data, headers=headers
             )
+
+            log.debug("Linode API response status code: %d", result.status_code)
+            log.trace("Linode API response body: %s", result.text)
             result.raise_for_status()
+
         except requests.exceptions.HTTPError as exc:
-            response = exc.response.json()
-            if "error" in response:
-                raise SaltCloudSystemExit("Linode API reported error: " + response["error"])
-            elif "errors" in response:
-                errors = map(lambda err: "field '{}': {}".format(err["field"], err["reason"]), response["errors"])
-                raise SaltCloudSystemExit("Linode API reported error(s): {}".format(","))
-            else:
-                raise SaltCloudSystemExit("Linode API error occurred")
+            err_response = exc.response
+            err_data = self._get_response_json(err_response)
+
+            if err_data is not None:
+                # Build an error from the response JSON
+                if "error" in err_data:
+                    raise SaltCloudSystemExit("Linode API reported error: {}".format(err_data["error"]))
+                elif "errors" in err_data:
+                    errors = map(lambda err: "field '{}': {}".format(err["field"], err["reason"]), err_data["errors"])
+                    raise SaltCloudSystemExit("Linode API reported error(s): {}".format(", ".join(errors)))
+
+            # If the response is not valid JSON or the error was not included, propagate the
+            # human readable status representation.
+            raise SaltCloudSystemExit("Linode API error occurred: {}".format(err_response.reason))
         if decode:
-            return result.json()
+            return self._get_response_json(result)
 
         return result
 
@@ -902,6 +911,14 @@ class LinodeAPIv4(LinodeAPI):
             entity_name="linode",
             identifier=linode_id,
             timeout=timeout)
+
+    def _get_response_json(self, response):
+        json = None
+        try:
+            json = response.json()
+        except ValueError:
+            pass
+        return json
 
 
 class LinodeAPIv3(LinodeAPI):
