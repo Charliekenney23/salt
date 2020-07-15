@@ -57,7 +57,6 @@ import re
 import time
 import abc
 import ipaddress
-import json
 
 # Import Salt Libs
 import salt.config as config
@@ -353,14 +352,14 @@ class LinodeAPIv4(LinodeAPI):
             )
             result.raise_for_status()
         except requests.exceptions.HTTPError as exc:
-            # TODO: retries
             response = exc.response.json()
             if "error" in response:
-                raise SaltCloudSystemExit("Linode API reported error: ", json.dumps(response["error"]))
+                raise SaltCloudSystemExit("Linode API reported error: " + response["error"])
             elif "errors" in response:
-                raise SaltCloudSystemExit("Linode API reported error(s): ",
-                    ", ".join(map(lambda err: json.dumps(err), response["errors"])))
-
+                errors = map(lambda err: "field '{}': {}".format(err["field"], err["reason"]), response["errors"])
+                raise SaltCloudSystemExit("Linode API reported error(s): " + ", ".join(errors))
+            else:
+                raise SaltCloudSystemExit("f")
         if decode:
             return result.json()
 
