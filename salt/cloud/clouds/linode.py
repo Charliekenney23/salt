@@ -57,6 +57,7 @@ import re
 import time
 import abc
 import ipaddress
+from pathlib import Path
 
 # Import Salt Libs
 import salt.config as config
@@ -194,7 +195,16 @@ def _get_private_ip(vm_):
     )
 
 
-def _get_pub_key(vm_):
+def _get_ssh_key_files(vm_):
+    """
+    Return the configured file paths of the SSH keys.
+    """
+    return config.get_cloud_config_value(
+        "ssh_key_files", vm_, __opts__, search_global=False, default=[]
+    )
+
+
+def _get_ssh_key(vm_):
     r"""
     Return the SSH pubkey.
 
@@ -204,6 +214,27 @@ def _get_pub_key(vm_):
     return config.get_cloud_config_value(
         "ssh_pubkey", vm_, __opts__, search_global=False
     )
+
+
+def _get_ssh_keys(vm_):
+    """
+    Return all SSH keys from ``ssh_pubkey`` and ``ssh_key_files``.
+    """
+    ssh_keys = set()
+
+    raw_pub_key = _get_ssh_key(vm_)
+    if raw_pub_key is not None:
+        ssh_keys.add(raw_pub_key)
+
+    key_files = _get_ssh_key_files(vm_)
+    for file in map(lambda file: Path(file).resolve(), key_files):
+        if not (file.exists() or file.is_file()):
+            raise SaltCloudSystemExit(
+                "Invalid SSH key file: {}".format(str(file))
+            )
+        ssh_keys.add(file.read_text())
+
+    return list(ssh_keys)
 
 
 def _get_ssh_interface(vm_):
@@ -504,7 +535,7 @@ class LinodeAPIv4(LinodeAPI):
 
         result = None
 
-        pub_ssh_key = _get_pub_key(vm_)
+        pub_ssh_keys = _get_ssh_keys(vm_)
         ssh_interface = _get_ssh_interface(vm_)
         use_private_ip = ssh_interface == "private_ips"
         assign_private_ip = _get_private_ip(vm_) or use_private_ip
@@ -546,7 +577,7 @@ class LinodeAPIv4(LinodeAPI):
             }
             if implicit_data_disk:
                 params["root_pass"] = password
-                params["authorized_keys"] = [pub_ssh_key]
+                params["authorized_keys"] = pub_ssh_keys
                 params["image"] = image
                 params["swap_size"] = swap_size
 
@@ -579,7 +610,7 @@ class LinodeAPIv4(LinodeAPI):
 
             data_disk = self._create_disk(
                 linode_id, size=root_disk_size, filesystem="ext4",
-                image=image, authorized_keys=[pub_ssh_key], root_pass=password)
+                image=image, authorized_keys=pub_ssh_keys, root_pass=password)
 
             self.create_config(kwargs={
                 "name": "Default Config",
@@ -1353,7 +1384,7 @@ class LinodeAPIv3(LinodeAPI):
     def _create_disk_from_distro(self, vm_, linode_id):
         kwargs = {}
         swap_size = _get_swap_size(vm_)
-        pub_key = _get_pub_key(vm_)
+        pub_key = _get_ssh_key(vm_)
         root_password = _get_password(vm_)
 
         if pub_key:
