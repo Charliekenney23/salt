@@ -350,6 +350,7 @@ class LinodeAPIv4(LinodeAPI):
             result = requests.request(
                 method, url, json=data, headers=headers, params=params
             )
+            result.raise_for_status()
         except requests.exceptions.HTTPError as exc:
             # TODO: retries
             response = exc.response.json()
