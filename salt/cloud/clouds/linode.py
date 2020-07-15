@@ -355,10 +355,10 @@ class LinodeAPIv4(LinodeAPI):
         except requests.exceptions.HTTPError as exc:
             # TODO: retries
             response = exc.response.json()
-            if 'error' in response:
-                return SaltCloudSystemExit("Linode API reported error: ", json.dumps(response["error"]))
-            elif 'errors' in response:
-                return SaltCloudSystemExit("Linode API reported error(s): ",
+            if "error" in response:
+                raise SaltCloudSystemExit("Linode API reported error: ", json.dumps(response["error"]))
+            elif "errors" in response:
+                raise SaltCloudSystemExit("Linode API reported error(s): ",
                     ", ".join(map(lambda err: json.dumps(err), response["errors"])))
 
         if decode:
