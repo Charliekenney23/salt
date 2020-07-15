@@ -111,14 +111,6 @@ def __virtual__():
     return __virtualname__
 
 
-def _get_dependencies():
-    """
-    Warn if dependencies aren't met.
-    """
-    deps = {"requests": HAS_REQUESTS}
-    return config.check_driver_dependencies(__virtualname__, deps)
-
-
 def get_configured_provider():
     """
     Return the first configured instance.
@@ -128,6 +120,14 @@ def get_configured_provider():
     )
 
 
+def _get_dependencies():
+    """
+    Warn if dependencies aren't met.
+    """
+    deps = {"requests": HAS_REQUESTS}
+    return config.check_driver_dependencies(__virtualname__, deps)
+
+
 def _get_api_version():
     """
     Return the configured Linode API version.
@@ -135,6 +135,12 @@ def _get_api_version():
     return config.get_cloud_config_value(
         'apiversion', get_configured_provider(), __opts__, search_global=False, default='v3'
     )
+
+
+def _get_cloud_interface():
+    if _is_api_v3():
+        return LinodeAPIv3()
+    return  LinodeAPIv4()
 
 
 def _get_poll_interval():
@@ -151,12 +157,6 @@ def _is_api_v3():
     Return whether the configured Linode API version is ``v3``.
     """
     return _get_api_version() is "v3"
-
-
-def _get_cloud_interface():
-    if _is_api_v3():
-        return LinodeAPIv3()
-    return  LinodeAPIv4()
 
 
 def _get_password(vm_):
@@ -177,7 +177,17 @@ def _get_password(vm_):
     )
 
 
-def get_private_ip(vm_):
+
+def _get_root_disk_size(vm_):
+    """
+    Return the specified size of the data partition.
+    """
+    return config.get_cloud_config_value(
+        "disk_size", vm_, __opts__, search_global=False
+    )
+
+
+def _get_private_ip(vm_):
     """
     Return True if a private ip address is requested
     """
@@ -186,7 +196,7 @@ def get_private_ip(vm_):
     )
 
 
-def get_pub_key(vm_):
+def _get_pub_key(vm_):
     r"""
     Return the SSH pubkey.
 
@@ -206,15 +216,6 @@ def _get_ssh_interface(vm_):
     return config.get_cloud_config_value(
         "ssh_interface", vm_, __opts__, default="public_ips", search_global=False
     )
-
-
-def _get_data_disk_size(vm_, swap, linode_id):
-    """
-    Return the size of of the data disk in MB
-
-    .. versionadded:: 2016.3.0
-    """
-    return _get_cloud_interface().get_data_disk_size(vm_, swap, linode_id)
 
 
 class LinodeAPI():
@@ -405,46 +406,6 @@ class LinodeAPIv4(LinodeAPI):
         return ret
 
 
-    def _get_linode_by_id(self, linode_id):
-        return self._query("/linode/instances/{}".format(linode_id))
-
-
-    def _get_linode_by_name(self, name):
-        result = self._query("/linode/instances")
-        instances = result.get("data", [])
-
-        for instance in instances:
-            if instance["label"] == name:
-                return instance
-
-        raise SaltCloudNotFound(
-            "The specified name, {0}, could not be found.".format(name)
-        )
-
-
-    def _wait_for_linode_status(self, linode_id, status, timeout=120):
-        poll_interval = _get_poll_interval()
-        instance = self._get_linode_by_id(linode_id)
-
-        times = (timeout * 1000) / poll_interval
-        curr = 1
-
-        while True:
-            instance = self._get_linode_by_id(linode_id)
-            current_status = instance.get("status", None)
-
-
-            if current_status == status:
-                return instance
-            elif curr <= times:
-                time.sleep(poll_interval / 1000)
-                log.info("waiting for linode instance %d status to be '%s'...", linode_id, status)
-            else:
-                raise SaltCloudException(
-                    "timed out while waiting for instance {} to reach status {}".format(linode_id, status)
-                )
-
-
     def boot(self, name=None, kwargs={}):
         instance = self.get_linode(kwargs={
             "linode_id": kwargs.get("linode_id", None),
@@ -503,18 +464,36 @@ class LinodeAPIv4(LinodeAPI):
             })
 
 
-    def _get_ips(self, linode_id):
-        instance = self._get_linode_by_id(linode_id)
-        public = []
-        private = []
+    def create_config(self, kwargs={}):
+        name = kwargs.get("name", None)
+        linode_id = kwargs.get("linode_id", None)
+        root_disk_id = kwargs.get("root_disk_id", None)
+        swap_disk_id = kwargs.get("swap_disk_id", None)
+        data_disk_id = kwargs.get("data_disk_id", None)
 
-        for addr in instance.get("ipv4", []):
-            if ipaddress.ip_address(addr).is_private:
-                private.append(addr)
-            else:
-                public.append(addr)
+        if not name and not linode_id:
+            raise SaltCloudSystemExit(
+                "The create_config function requires either a 'name' or 'linode_id'"
+            )
 
-        return (public, private)
+        required_params = [name, linode_id, root_disk_id, swap_disk_id]
+        for item in required_params:
+            if item is None:
+                raise SaltCloudSystemExit(
+                    "The create_config functions requires a 'name', 'linode_id', "
+                    "'root_disk_id', and 'swap_disk_id'."
+                )
+
+        devices = {
+            "sda": { "disk_id": int(root_disk_id) },
+            "sdb": { "disk_id": int(data_disk_id) } if data_disk_id is not None else None,
+            "sdc": { "disk_id": int(swap_disk_id) },
+        }
+
+        return self._query("/linode/instances/{}/configs".format(linode_id), method="POST", data={
+            "label": name,
+            "devices": devices,
+        })
 
 
     def create(self, vm_):
@@ -534,20 +513,24 @@ class LinodeAPIv4(LinodeAPI):
             transport=__opts__["transport"],
         )
 
-        log.info("Creating Linode Instance %s", name)
+        log.info("Creating Cloud VM %s", name)
 
         result = None
-        clonefrom_name = vm_.get("clonefrom", None)
-        ssh_interface = _get_ssh_interface(vm_)
-        assign_private_ip = get_private_ip(vm_)
-        use_private_ip = ssh_interface == "private_ips"
-        password = _get_password(vm_)
-        should_clone = True if clonefrom_name else False
 
-        if not assign_private_ip and use_private_ip:
-            raise SaltCloudSystemExit(
-                'Cannot use private ip as SSH interface for VM without private key assignment'
-            )
+        pub_ssh_key = _get_pub_key(vm_)
+        ssh_interface = _get_ssh_interface(vm_)
+        use_private_ip = ssh_interface is "private_ips"
+        assign_private_ip = _get_private_ip(vm_) or use_private_ip
+        password = _get_password(vm_)
+        swap_size = _get_swap_size(vm_)
+        root_disk_size = _get_root_disk_size(vm_)
+
+        clonefrom_name = vm_.get("clonefrom", None)
+        instance_type = vm_.get("size", None)
+        image = vm_.get("image", None)
+
+        implicit_data_disk = root_disk_size is None
+        should_clone = True if clonefrom_name else False
 
         if should_clone:
             # clone into new linode
@@ -567,37 +550,106 @@ class LinodeAPIv4(LinodeAPI):
                 })
         else:
             # create new linode
-            result = self._query("/linode/instances", method="POST", data={
+            params = {
                 "label": name,
-                "image": vm_.get("vm", None),
+                "type": instance_type,
                 "region": vm_.get("location", None),
-                "type": vm_.get("size", None),
                 "private_ip": assign_private_ip,
-                "root_pass": password,
-                "booted": False,
+                "booted": implicit_data_disk,
+            }
+            if implicit_data_disk:
+                params["root_pass"] = password
+                params["authorized_keys"] = [pub_ssh_key]
+                params["image"] = image
+                params["swap_size"] = swap_size
+
+            result = self._query("/linode/instances", method="POST", data=params)
+
+        linode_id = result.get("id", None)
+
+        # create declared disks if needed
+        if not should_clone and not implicit_data_disk:
+            instance_spec = self._get_linode_type(instance_type)
+            disk_size = instance_spec.get("disk", 0)
+
+            if not root_disk_size:
+                root_disk_size = disk_size - swap_size
+
+            if root_disk_size + swap_size > disk_size:
+                raise SaltCloudException(
+                    "Insufficient space available for type '{}' ({})".format(instance_type, disk_size)
+                )
+
+            if root_disk_size <= 0:
+                raise SaltCloudException(
+                    "Disk must be allocated for the root disk partition"
+                )
+
+            swap_disk = None
+            if swap_size is not 0:
+                self._create_disk(linode_id, size=swap_size, filesystem="swap")
+            
+            data_disk = self._create_disk(
+                linode_id, size=root_disk_size, filesystem="ext4",
+                image=image, authorized_keys=[pub_ssh_key], root_pass=password)
+
+            self.create_config(kwargs={
+                "name": "Default Config",
+                "linode_id", linode_id,
+                "data_disk_id": data_disk["id"],
+                "swap_disk_id": swap_disk["id"] if swap_disk else None
             })
 
 
-        # if not should_clone:
-
-        #     # boot_disk creation
-        #     # swap_disk creation
-
         # boot linode
-        self.boot(kwargs={"linode_id": result["id"], "check_running": False})
+        self.boot(kwargs={"linode_id": linode_id, "check_running": False})
         self._get_linode_by_id(result["id"])
 
         public_ips, private_ips = self._get_ips(linode_id)
 
         data = {}
-        data["id"] = result["id"]
+        data["id"] = linode_id
         data["name"] = result["label"]
         data["size"] = result["type"]
-        data["status"] = result["status"]
+        data["state"] = result["status"]
         data["ipv4"] = result["ipv4"]
         data["ipv6"] = result["ipv6"]
         data["public_ips"] = public_ips
         data["private_ips"] = private_ips
+
+        if use_private_ip:
+            vm_["ssh_host"] = private_ips[0]
+        else:
+            vm_["ssh_host"] = public_ips[0]
+
+        # Send event that the instance has booted.
+        __utils__["cloud.fire_event"](
+            "event",
+            "waiting for ssh",
+            "salt/cloud/{0}/waiting_for_ssh".format(name),
+            sock_dir=__opts__["sock_dir"],
+            args={"ip_address": vm_["ssh_host"]},
+            transport=__opts__["transport"],
+        )
+
+        ret = __utils__["cloud.bootstrap"](vm_, __opts__)
+        ret.update(data)
+
+        log.info("Created Cloud VM '%s'", name)
+        log.debug("'%s' VM creation details:\n%s", name, pprint.pformat(data))
+
+        __utils__["cloud.fire_event"](
+            "event",
+            "created instance",
+            "salt/cloud/{0}/created".format(name),
+            args=__utils__["cloud.filter_event"](
+                "created", vm_, ["name", "profile", "provider", "driver"]
+            ),
+            sock_dir=__opts__["sock_dir"],
+            transport=__opts__["transport"],
+        )
+
+        return ret
 
 
     def destroy(self, name):
@@ -641,41 +693,16 @@ class LinodeAPIv4(LinodeAPI):
 
 
     def list_nodes_min(self):
-        result = self._query('/linode/instances')
-        instances = result.get('data', [])
+        result = self._query("/linode/instances")
+        instances = result.get("data", [])
 
         ret = {}
         for instance in instances:
-            name = instance['label']
+            name = instance["label"]
             ret[name] = {
-                'id': instance['id'],
-                'state': instance['status']
+                "id": instance["id"],
+                "state": instance["status"]
             }
-
-        return ret
-
-
-    def _list_linodes(self, full=False):
-        result = self._query('/linode/instances')
-        instances = result.get('data', [])
-
-        ret = {}
-        for instance in instances:
-            node = {}
-            node['id'] = instance['id']
-            node['image'] = instance['image']
-            node['name'] = instance['label']
-            node['size'] = instance['type']
-            node['state'] = instance['status']
-
-            public_ips, private_ips = self._get_ips(node["id"])
-            node["public_ips"] = public_ips
-            node["private_ips"] = private_ips
-
-            if full:
-                node['extra'] = instance
-
-            ret[instance['label']] = node
 
         return ret
 
@@ -723,7 +750,7 @@ class LinodeAPIv4(LinodeAPI):
         if len(comps) < 2 or comps[1] != "linode":
             raise SaltCloudException("The requested profile does not belong to Linode.")
 
-        instance_type = self._query("/linode/types/{}".format(profile["size"]))
+        instance_type = self._get_linode_type(profile["size"])
         pricing = instance_type.get("price", {})
 
         per_hour = pricing["hourly"]
@@ -787,6 +814,136 @@ class LinodeAPIv4(LinodeAPI):
             "action": "stop"
         }
 
+    
+    def _get_linode_by_id(self, linode_id):
+        return self._query("/linode/instances/{}".format(linode_id))
+
+
+    def _get_linode_by_name(self, name):
+        result = self._query("/linode/instances")
+        instances = result.get("data", [])
+
+        for instance in instances:
+            if instance["label"] == name:
+                return instance
+
+        raise SaltCloudNotFound(
+            "The specified name, {0}, could not be found.".format(name)
+        )
+
+
+    def _list_linodes(self, full=False):
+        result = self._query('/linode/instances')
+        instances = result.get('data', [])
+
+        ret = {}
+        for instance in instances:
+            node = {}
+            node['id'] = instance['id']
+            node['image'] = instance['image']
+            node['name'] = instance['label']
+            node['size'] = instance['type']
+            node['state'] = instance['status']
+
+            public_ips, private_ips = self._get_ips(node["id"])
+            node["public_ips"] = public_ips
+            node["private_ips"] = private_ips
+
+            if full:
+                node['extra'] = instance
+
+            ret[instance['label']] = node
+
+        return ret
+
+
+    def _get_linode_type(self, linode_type):
+        return self._query("/linode/types/{}".format(linode_type))
+
+
+    def _get_ips(self, linode_id):
+        instance = self._get_linode_by_id(linode_id)
+        public = []
+        private = []
+
+        for addr in instance.get("ipv4", []):
+            if ipaddress.ip_address(addr).is_private:
+                private.append(addr)
+            else:
+                public.append(addr)
+
+        return (public, private)
+
+
+    def _create_disk(
+        self,
+        linode_id,
+        size=None,
+        label=None,
+        authorized_keys=None,
+        filesystem=None,
+        image=None,
+        root_pass=None
+    ):
+        disk = self._query("/linode/instance/{}/disks".format(linode_id),
+            method="POST",
+            data={
+                "size": size,
+                "label": label,
+                "authorized_keys": authorized_keys,
+                "filesystem": filesystem,
+                "image": image,
+                "root_pass": root_pass,
+            })
+        disk_id = disk.get("id", None)
+
+        self._wait_for_disk_status(linode_id, disk_id, "ready")
+        return disk
+
+
+    def _wait_for_entity_status(
+        self,
+        getter,
+        status,
+        entity_name="item",
+        identifier="some",
+        timeout=120
+    ):
+        poll_interval = _get_poll_interval()
+        times = (timeout * 1000) / poll_interval
+        curr = 1
+
+        while True:
+            result = getter()
+            current_status = result.get("status", None)
+
+            if current_status == status:
+                return result
+            elif curr <= times:
+                time.sleep(poll_interval / 1000)
+                log.info("waiting for %s %d status to be '%s'...", entity_name, identifier, status)
+            else:
+                raise SaltCloudException(
+                    "timed out while waiting for {} {} to reach status {}.".format(entity_name, identifier, status)
+                )
+
+
+    def _wait_for_disk_status(self, linode_id, disk_id, status, timeout=120):
+        return self._wait_for_entity_status(
+            lambda : self._query("/linode/instance/{}/disk/{}".format(linode_id, disk_id)),
+            status,
+            entity_name="instance disk",
+            identifier="{}/{}".format(linode_id, disk_id),
+            timeout=timeout)
+
+
+    def _wait_for_linode_status(self, linode_id, status, timeout=120):
+        return self._wait_for_entity_status(
+            lambda : self._get_linode_by_id(linode_id),
+            status,
+            entity_name="linode",
+            identifier=linode_id,
+            timeout=timeout)
 
 
 class LinodeAPIv3(LinodeAPI):
@@ -1078,10 +1235,10 @@ class LinodeAPIv3(LinodeAPI):
             transport=__opts__["transport"],
         )
 
-        node_id = _clean_data(result)["LinodeID"]
+        node_id = self._clean_data(result)["LinodeID"]
         data["id"] = node_id
 
-        if not _wait_for_status(node_id, status=(_get_status_id_by_name("brand_new"))):
+        if not self._wait_for_status(node_id, status=(self._get_status_id_by_name("brand_new"))):
             log.error(
                 "Error creating %s on LINODE\n\n" "while waiting for initial ready status",
                 name,
@@ -1093,7 +1250,7 @@ class LinodeAPIv3(LinodeAPI):
         log.debug("Set name for %s - was linode%s.", name, node_id)
 
         # Add private IP address if requested
-        private_ip_assignment = get_private_ip(vm_)
+        private_ip_assignment = _get_private_ip(vm_)
         if private_ip_assignment:
             self._create_private_ip(node_id)
 
@@ -1125,7 +1282,7 @@ class LinodeAPIv3(LinodeAPI):
             )["ConfigID"]
 
         # Boot the Linode
-        boot(kwargs={"linode_id": node_id, "config_id": config_id, "check_running": False})
+        self.boot(kwargs={"linode_id": node_id, "config_id": config_id, "check_running": False})
 
         node_data = get_linode(kwargs={"linode_id": node_id})
         ips = self._get_ips(node_id)
@@ -1134,7 +1291,7 @@ class LinodeAPIv3(LinodeAPI):
         data["image"] = kwargs["image"]
         data["name"] = name
         data["size"] = size
-        data["state"] = _get_status_descr_by_id(state)
+        data["state"] = self._get_status_descr_by_id(state)
         data["private_ips"] = ips["private_ips"]
         data["public_ips"] = ips["public_ips"]
 
@@ -1203,28 +1360,36 @@ class LinodeAPIv3(LinodeAPI):
                     "'root_disk_id', and 'swap_disk_id'."
                 )
 
+        if kernel_id is None:
+            # 138 appears to always be the latest 64-bit kernel for Linux
+            kernel_id = 138
+
+        if not linode_id:
+            instance = self._get_linode_by_name(name)
+            linode_id = instance.get("id", None)
+
         disklist = "{0},{1}".format(root_disk_id, swap_disk_id)
         if data_disk_id is not None:
             disklist = "{0},{1},{2}".format(root_disk_id, swap_disk_id, data_disk_id)
 
         config_args = {
-            "LinodeID": linode_id,
-            "KernelID": kernel_id,
+            "LinodeID": int(linode_id),
+            "KernelID": int(kernel_id),
             "Label": name,
             "DiskList": disklist,
         }
 
         result = self._query("linode", "config.create", args=config_args)
 
-        return _clean_data(result)
+        return result.get("DATA", None)
 
 
     def _create_disk_from_distro(self, vm_, node_id):
         kwargs = {}
         if swap_size is None:
-            swap_size = get_swap_size(vm_)
+            swap_size = _get_swap_size(vm_)
 
-        pub_key = get_pub_key(vm_)
+        pub_key = _get_pub_key(vm_)
         root_password = _get_password(vm_)
 
         if pub_key:
@@ -1245,7 +1410,7 @@ class LinodeAPIv3(LinodeAPI):
 
         result = self._query("linode", "disk.createfromdistribution", args=kwargs)
 
-        return _clean_data(result)
+        return self._clean_data(result)
 
 
     def _create_swap_disk(self, vm_, linode_id, swap_size=None):
@@ -1264,7 +1429,7 @@ class LinodeAPIv3(LinodeAPI):
         kwargs = {}
 
         if not swap_size:
-            swap_size = get_swap_size(vm_)
+            swap_size = _get_swap_size(vm_)
 
         kwargs.update(
             {"LinodeID": linode_id, "Label": vm_["name"], "Type": "swap", "Size": swap_size}
@@ -1272,7 +1437,7 @@ class LinodeAPIv3(LinodeAPI):
 
         result = self._query("linode", "disk.create", args=kwargs)
 
-        return _clean_data(result)
+        return self._clean_data(result)
 
 
     def _create_data_disk(self, vm_=None, linode_id=None, data_size=None):
@@ -1288,7 +1453,7 @@ class LinodeAPIv3(LinodeAPI):
         )
 
         result = self._query("linode", "disk.create", args=kwargs)
-        return _clean_data(result)
+        return self._clean_data(result)
 
 
     def _create_private_ip(self, linode_id):
@@ -1301,7 +1466,7 @@ class LinodeAPIv3(LinodeAPI):
         kwargs = {"LinodeID": linode_id}
         result = self._query("linode", "ip.addprivate", args=kwargs)
 
-        return _clean_data(result)
+        return self._clean_data(result)
 
 
     def destroy(self, name):
@@ -1442,14 +1607,6 @@ class LinodeAPIv3(LinodeAPI):
         )
 
 
-    def get_data_disk_size(self, vm_, swap, linode_id):
-        disk_size = get_linode(kwargs={"linode_id": linode_id})["TOTALHD"]
-        root_disk_size = config.get_cloud_config_value(
-            "disk_size", vm_, __opts__, default=disk_size - swap
-        )
-        return disk_size - root_disk_size - swap
-
-
     def _get_distribution_id(self, vm_):
         r"""
         Returns the distribution ID for a VM
@@ -1584,9 +1741,9 @@ class LinodeAPIv3(LinodeAPI):
             Log status updates to debug logs when False. Otherwise, logs to info.
         """
         if status is None:
-            status = _get_status_id_by_name("brand_new")
+            status = self._get_status_id_by_name("brand_new")
 
-        status_desc_waiting = _get_status_descr_by_id(status)
+        status_desc_waiting = self._get_status_descr_by_id(status)
 
         interval = 5
         iterations = int(timeout / interval)
@@ -1597,7 +1754,7 @@ class LinodeAPIv3(LinodeAPI):
             if result["STATUS"] == status:
                 return True
 
-            status_desc_result = _get_status_descr_by_id(result["STATUS"])
+            status_desc_result = self._get_status_descr_by_id(result["STATUS"])
 
             time.sleep(interval)
             log.log(
@@ -1626,7 +1783,7 @@ class LinodeAPIv3(LinodeAPI):
             this_node["size"] = node["TOTALRAM"]
 
             state = int(node["STATUS"])
-            this_node["state"] = _get_status_descr_by_id(state)
+            this_node["state"] = self._get_status_descr_by_id(state)
 
             for key, val in six.iteritems(ips):
                 if key == linode_id:
@@ -1657,7 +1814,7 @@ class LinodeAPIv3(LinodeAPI):
             name = node["LABEL"]
             ret[name] = {
                 "id": six.text_type(node["LINODEID"]),
-                "state": _get_status_descr_by_id(int(node["STATUS"])),
+                "state": self._get_status_descr_by_id(int(node["STATUS"])),
             }
         return ret
 
@@ -1673,7 +1830,7 @@ class LinodeAPIv3(LinodeAPI):
             "image": node_data["DISTRIBUTIONVENDOR"],
             "name": node_data["LABEL"],
             "size": node_data["TOTALRAM"],
-            "state": _get_status_descr_by_id(state),
+            "state": self._get_status_descr_by_id(state),
             "private_ips": ips["private_ips"],
             "public_ips": ips["public_ips"],
         }
@@ -1705,7 +1862,7 @@ class LinodeAPIv3(LinodeAPI):
     def _update_linode(linode_id, update_args=None):
         update_args.update({"LinodeID": linode_id})
         result = self._query("linode", "update", args=update_args)
-        return _clean_data(result)
+        return self._clean_data(result)
 
 
     def _get_linode_id_from_name(self, name):
@@ -1765,7 +1922,7 @@ class LinodeAPIv3(LinodeAPI):
     def reboot(self, name):
         node_id = self._get_linode_id_from_name(name)
         response = self._query("linode", "reboot", args={"LinodeID": node_id})
-        data = _clean_data(response)
+        data = self._clean_data(response)
         reboot_jid = data["JobID"]
 
         if not self._wait_for_job(node_id, reboot_jid):
@@ -1774,6 +1931,45 @@ class LinodeAPIv3(LinodeAPI):
 
         return data
 
+
+    def _clean_data(api_response):
+        """
+        Returns the DATA response from a Linode API query as a single pre-formatted dictionary
+
+        api_response
+            The query to be cleaned.
+        """
+        data = {}
+        data.update(api_response["DATA"])
+
+        if not data:
+            response_data = api_response["DATA"]
+            data.update(response_data)
+
+        return data
+
+
+    def _get_status_descr_by_id(status_id):
+        """
+        Return linode status by ID
+
+        status_id
+            linode VM status ID
+        """
+        for status_name, status_data in six.iteritems(LINODE_STATUS):
+            if status_data["code"] == int(status_id):
+                return status_data["descr"]
+        return LINODE_STATUS.get(status_id, None)
+
+
+    def _get_status_id_by_name(status_name):
+        """
+        Return linode status description by internalstatus name
+
+        status_name
+            internal linode VM status name
+        """
+        return LINODE_STATUS.get(status_name, {}).get("code", None)
 
 
 def avail_images(call=None):
@@ -2068,14 +2264,14 @@ def get_plan_id(kwargs={}, call=None):
     return LinodeAPIv3().get_plan_id(kwargs=kwargs)
 
 
-def get_swap_size(vm_):
+def _get_swap_size(vm_):
     r"""
     Returns the amount of swap space to be used in MB.
 
     vm\_
         The VM profile to obtain the swap size from.
     """
-    return config.get_cloud_config_value("swap", vm_, __opts__, default=128)
+    return config.get_cloud_config_value("swap", vm_, __opts__, default=256)
 
 
 def list_nodes(call=None):
@@ -2261,46 +2457,6 @@ def stop(name, call=None):
     if call != "action":
         raise SaltCloudException("The stop action must be called with -a or --action.")
     return _get_cloud_interface().stop(name)
-
-
-def _clean_data(api_response):
-    """
-    Returns the DATA response from a Linode API query as a single pre-formatted dictionary
-
-    api_response
-        The query to be cleaned.
-    """
-    data = {}
-    data.update(api_response["DATA"])
-
-    if not data:
-        response_data = api_response["DATA"]
-        data.update(response_data)
-
-    return data
-
-
-def _get_status_descr_by_id(status_id):
-    """
-    Return linode status by ID
-
-    status_id
-        linode VM status ID
-    """
-    for status_name, status_data in six.iteritems(LINODE_STATUS):
-        if status_data["code"] == int(status_id):
-            return status_data["descr"]
-    return LINODE_STATUS.get(status_id, None)
-
-
-def _get_status_id_by_name(status_name):
-    """
-    Return linode status description by internalstatus name
-
-    status_name
-        internal linode VM status name
-    """
-    return LINODE_STATUS.get(status_name, {}).get("code", None)
 
 
 def _validate_name(name):
