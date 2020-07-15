@@ -1384,7 +1384,7 @@ class LinodeAPIv3(LinodeAPI):
         return result.get("DATA", None)
 
 
-    def _create_disk_from_distro(self, vm_, node_id):
+    def _create_disk_from_distro(self, vm_, linode_id):
         kwargs = {}
         swap_size = _get_swap_size(vm_)
         pub_key = _get_pub_key(vm_)
