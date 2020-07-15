@@ -595,7 +595,7 @@ class LinodeAPIv4(LinodeAPI):
 
             self.create_config(kwargs={
                 "name": "Default Config",
-                "linode_id", linode_id,
+                "linode_id": linode_id,
                 "data_disk_id": data_disk["id"],
                 "swap_disk_id": swap_disk["id"] if swap_disk else None
             })
