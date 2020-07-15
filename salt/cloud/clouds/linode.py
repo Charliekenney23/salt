@@ -426,7 +426,7 @@ class LinodeAPIv4(LinodeAPI):
         response = self._query(
             "/linode/instances/{0}/boot".format(linode_id),
             method="POST",
-            body={"config_id": config_id})
+            data={"config_id": config_id})
         
         self._wait_for_linode_status(linode_id, "running")
         return True
