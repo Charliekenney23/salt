@@ -1859,7 +1859,7 @@ class LinodeAPIv3(LinodeAPI):
         return {profile["profile"]: ret}
 
 
-    def _update_linode(linode_id, update_args=None):
+    def _update_linode(self, linode_id, update_args=None):
         update_args.update({"LinodeID": linode_id})
         result = self._query("linode", "update", args=update_args)
         return self._clean_data(result)
@@ -1932,7 +1932,7 @@ class LinodeAPIv3(LinodeAPI):
         return data
 
 
-    def _clean_data(api_response):
+    def _clean_data(self, api_response):
         """
         Returns the DATA response from a Linode API query as a single pre-formatted dictionary
 
@@ -1949,7 +1949,7 @@ class LinodeAPIv3(LinodeAPI):
         return data
 
 
-    def _get_status_descr_by_id(status_id):
+    def _get_status_descr_by_id(self, status_id):
         """
         Return linode status by ID
 
@@ -1962,7 +1962,7 @@ class LinodeAPIv3(LinodeAPI):
         return LINODE_STATUS.get(status_id, None)
 
 
-    def _get_status_id_by_name(status_name):
+    def _get_status_id_by_name(self, status_name):
         """
         Return linode status description by internalstatus name
 
