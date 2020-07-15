@@ -357,9 +357,9 @@ class LinodeAPIv4(LinodeAPI):
                 raise SaltCloudSystemExit("Linode API reported error: " + response["error"])
             elif "errors" in response:
                 errors = map(lambda err: "field '{}': {}".format(err["field"], err["reason"]), response["errors"])
-                raise SaltCloudSystemExit("Linode API reported error(s): " + ", ".join(errors))
+                raise SaltCloudSystemExit("Linode API reported error(s): {}".format(","))
             else:
-                raise SaltCloudSystemExit("f")
+                raise SaltCloudSystemExit("Linode API error occurred")
         if decode:
             return result.json()
 
