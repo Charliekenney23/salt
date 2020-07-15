@@ -489,6 +489,7 @@ class LinodeAPIv4(LinodeAPI):
         )
 
         log.info("Creating Cloud VM %s", name)
+        print('about to create')
 
         result = None
 
