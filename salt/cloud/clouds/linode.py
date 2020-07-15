@@ -540,6 +540,7 @@ class LinodeAPIv4(LinodeAPI):
                 params["swap_size"] = swap_size
 
             result = self._query("/linode/instances", method="POST", data=params)
+            print('result', result)
 
         linode_id = result.get("id", None)
 
