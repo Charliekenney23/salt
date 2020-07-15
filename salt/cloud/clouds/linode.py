@@ -315,6 +315,7 @@ class LinodeAPI():
         
 
     def get_linode(self, kwargs={}):
+        print("in get_linode", kwargs, "api version", _get_api_version())
         name = kwargs.get("name", None)
         linode_id = kwargs.get("linode_id", None)
 
@@ -603,7 +604,6 @@ class LinodeAPIv4(LinodeAPI):
 
         # boot linode
         self.boot(kwargs={"linode_id": linode_id, "check_running": False})
-        self._get_linode_by_id(result["id"])
 
         public_ips, private_ips = self._get_ips(linode_id)
 
