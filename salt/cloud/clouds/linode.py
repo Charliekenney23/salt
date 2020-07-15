@@ -1386,9 +1386,7 @@ class LinodeAPIv3(LinodeAPI):
 
     def _create_disk_from_distro(self, vm_, node_id):
         kwargs = {}
-        if swap_size is None:
-            swap_size = _get_swap_size(vm_)
-
+        swap_size = _get_swap_size(vm_)
         pub_key = _get_pub_key(vm_)
         root_password = _get_password(vm_)
 
