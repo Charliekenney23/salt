@@ -17,10 +17,12 @@ Set up the cloud configuration at ``/etc/salt/cloud.providers`` or ``/etc/salt/c
 
 .. code-block:: yaml
     my-linode-provider:
-        apikey: f4ZsmwtB1c7f85Jdu43RgXVDFlNjuJaeIYV8QMftTqKScEB2vSosFSr...
-        password: F00barbaz
         driver: linode
-        apiversion: v4
+        api_version: v4
+        api_key: f4ZsmwtB1c7f85Jdu43RgXVDFlNjuJaeIYV8QMftTqKScEB2vSosFSr...
+        password: F00barbaz
+        ssh_key_files:
+          - ~/.ssh/id_rsa.pub
 
     linode-profile:
         provider: my-linode-provider
@@ -83,6 +85,8 @@ log = logging.getLogger(__name__)
 # The epoch of the last time a query was made
 LASTCALL = int(time.mktime(datetime.datetime.now().timetuple()))
 
+LINODE_BUSY_REASON = "Linode busy."
+
 # Human-readable status fields for APIv3 (documentation: https://www.linode.com/api/linode/linode.list)
 LINODE_STATUS = {
     "boot_failed": {"code": -2, "descr": "Boot Failed (not in use)"},
@@ -133,14 +137,51 @@ def _get_api_version():
     Return the configured Linode API version.
     """
     return config.get_cloud_config_value(
-        'apiversion', get_configured_provider(), __opts__, search_global=False, default='v3'
+        'api_version', get_configured_provider(), __opts__, search_global=False, default='v3'
     )
+
+
+def _is_api_v3():
+    """
+    Return whether the configured Linode API version is ``v3``.
+    """
+    return _get_api_version() == "v3"
 
 
 def _get_cloud_interface():
     if _is_api_v3():
         return LinodeAPIv3()
     return LinodeAPIv4()
+
+
+def _get_api_key():
+    """
+    Returned the configured Linode API key.
+    """
+    return config.get_cloud_config_value(
+        "api_key", get_configured_provider(), __opts__, search_global=False,
+        default=config.get_cloud_config_value(
+            "apikey", get_configured_provider(), __opts__, search_global=False
+        ),
+    )
+
+
+def _get_ratelimit_sleep():
+    """
+    Return the configured time to wait before retrying after a ratelimit has been enforced.
+    """
+    return config.get_cloud_config_value(
+        "ratelimit_sleep", get_configured_provider(), __opts__, search_global=False, default=0,
+    )
+
+
+def _get_max_retries():
+    """
+    Return the configured max retry attempts on API requests.
+    """
+    return config.get_cloud_config_value(
+        "max_retries", get_configured_provider(), __opts__, search_global=False
+    )
 
 
 def _get_poll_interval():
@@ -150,13 +191,6 @@ def _get_poll_interval():
     return config.get_cloud_config_value(
         "poll_interval", get_configured_provider(), __opts__, search_global=False, default=500
     )
-
-
-def _is_api_v3():
-    """
-    Return whether the configured Linode API version is ``v3``.
-    """
-    return _get_api_version() == "v3"
 
 
 def _get_password(vm_):
@@ -352,18 +386,17 @@ class LinodeAPIv4(LinodeAPI):
         data=None,
         headers=None
     ):
-        '''
+        """
         Make a call to the Linode API.
-        '''
-        provider = get_configured_provider()
+        """
         apiversion = _get_api_version()
-        apikey = config.get_cloud_config_value(
-            'apikey', provider, __opts__, search_global=False
-        )
+        api_key = _get_api_key()
+        max_retries = _get_max_retries()
+        ratelimit_sleep = _get_ratelimit_sleep()
 
         if headers is None:
             headers = {}
-        headers['Authorization'] = 'Bearer {}'.format(apikey)
+        headers['Authorization'] = 'Bearer {}'.format(api_key)
         headers['Content-Type'] = 'application/json'
 
         url = 'https://api.linode.com/{}{}'.format(apiversion, path)
@@ -376,30 +409,52 @@ class LinodeAPIv4(LinodeAPI):
         if data is not None:
             log.trace("Linode API request body: %s", data)
 
-        try:
-            result = requests.request(
-                method, url, json=data, headers=headers
-            )
+        attempt = 0
+        while True:
+            try:
+                result = requests.request(
+                    method, url, json=data, headers=headers
+                )
 
-            log.debug("Linode API response status code: %d", result.status_code)
-            log.trace("Linode API response body: %s", result.text)
-            result.raise_for_status()
+                log.debug("Linode API response status code: %d", result.status_code)
+                log.trace("Linode API response body: %s", result.text)
+                result.raise_for_status()
+                break
+            except requests.exceptions.HTTPError as exc:
+                err_response = exc.response
+                err_data = self._get_response_json(err_response)
+                status_code = err_response.status_code
 
-        except requests.exceptions.HTTPError as exc:
-            err_response = exc.response
-            err_data = self._get_response_json(err_response)
+                if err_data is not None:
+                    # Build an error from the response JSON
+                    if "error" in err_data:
+                        raise SaltCloudSystemExit("Linode API reported error: {}".format(err_data["error"]))
+                    elif "errors" in err_data:
+                        api_errors = err_data["errors"]
 
-            if err_data is not None:
-                # Build an error from the response JSON
-                if "error" in err_data:
-                    raise SaltCloudSystemExit("Linode API reported error: {}".format(err_data["error"]))
-                elif "errors" in err_data:
-                    errors = map(lambda err: "field '{}': {}".format(err["field"], err["reason"]), err_data["errors"])
-                    raise SaltCloudSystemExit("Linode API reported error(s): {}".format(", ".join(errors)))
+                        can_retry = attempt <= max_retries
+                        linode_busy_err = len(api_errors) == 1 and api_errors[0].get("reason") == LINODE_BUSY_REASON
 
-            # If the response is not valid JSON or the error was not included, propagate the
-            # human readable status representation.
-            raise SaltCloudSystemExit("Linode API error occurred: {}".format(err_response.reason))
+                        # Retry Linode Busy/transient HTTP errors
+                        if can_retry and linode_busy_err:
+                            log.debug("Got 'Linode Busy' (attempt %d/%d); retrying in %d seconds...",
+                                attempt, max_retries, ratelimit_sleep)
+                            time.sleep(ratelimit_sleep)
+                            continue
+
+                        # Build Salt exception
+                        errors = []
+                        for error in err_data["errors"]:
+                            if "field" in error:
+                                errors.push("field '{}': {}".format(errors.get("field"), errors.get("reason")))
+                            else:
+                                errors.push(errors.get("reason"))
+
+                        raise SaltCloudSystemExit("Linode API reported error(s): {}".format(", ".join(errors)))
+
+                # If the response is not valid JSON or the error was not included, propagate the
+                # human readable status representation.
+                raise SaltCloudSystemExit("Linode API error occurred: {}".format(err_response.reason))
         if decode:
             return self._get_response_json(result)
 
@@ -974,11 +1029,8 @@ class LinodeAPIv3(LinodeAPI):
         Make a web call to the Linode API.
         """
         global LASTCALL
-        vm_ = get_configured_provider()
-        ratelimit_sleep = config.get_cloud_config_value(
-            "ratelimit_sleep", vm_, __opts__, search_global=False, default=0,
-        )
-        apikey = config.get_cloud_config_value("apikey", vm_, __opts__, search_global=False)
+        ratelimit_sleep = _get_ratelimit_sleep()
+        apikey = _get_api_key()
 
         if not isinstance(args, dict):
             args = {}
