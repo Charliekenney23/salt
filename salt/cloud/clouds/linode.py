@@ -662,6 +662,8 @@ class LinodeAPIv4(LinodeAPI):
                     "Disk must be allocated for the root disk partition"
                 )
 
+            self._wait_for_linode_status(linode_id, "offline")
+
             swap_disk = None
             if swap_size != 0:
                 self._create_disk(linode_id, size=swap_size, filesystem="swap")
@@ -681,7 +683,7 @@ class LinodeAPIv4(LinodeAPI):
             self.boot(kwargs={"linode_id": linode_id, "check_running": False})
 
         # wait for linode to be booted
-        self._wait_for_linode_status(linode_id, 'running')
+        self._wait_for_linode_status(linode_id, "running")
 
         public_ips, private_ips = self._get_ips(linode_id)
 
