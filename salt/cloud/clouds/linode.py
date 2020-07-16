@@ -442,6 +442,7 @@ class LinodeAPIv4(LinodeAPI):
                             log.debug("Got 'Linode Busy' (attempt %d/%d); retrying in %d seconds...",
                                 attempt, max_retries, ratelimit_sleep)
                             time.sleep(ratelimit_sleep)
+                            attempt += 1
                             continue
 
                         # Build Salt exception
@@ -676,8 +677,11 @@ class LinodeAPIv4(LinodeAPI):
                 "swap_disk_id": swap_disk["id"] if swap_disk else None
             })
 
-        # boot linode
-        self.boot(kwargs={"linode_id": linode_id, "check_running": False})
+            # boot linode
+            self.boot(kwargs={"linode_id": linode_id, "check_running": False})
+
+        # wait for linode to be booted
+        self._wait_for_linode_status(linode_id, 'running')
 
         public_ips, private_ips = self._get_ips(linode_id)
 
@@ -943,7 +947,7 @@ class LinodeAPIv4(LinodeAPI):
         image=None,
         root_pass=None
     ):
-        disk = self._query("/linode/instance/{}/disks".format(linode_id),
+        disk = self._query("/linode/instances/{}/disks".format(linode_id),
             method="POST",
             data={
                 "size": size,
@@ -986,7 +990,7 @@ class LinodeAPIv4(LinodeAPI):
 
     def _wait_for_disk_status(self, linode_id, disk_id, status, timeout=120):
         return self._wait_for_entity_status(
-            lambda: self._query("/linode/instance/{}/disk/{}".format(linode_id, disk_id)),
+            lambda: self._query("/linode/instances/{}/disk/{}".format(linode_id, disk_id)),
             status,
             entity_name="instance disk",
             identifier="{}/{}".format(linode_id, disk_id),
