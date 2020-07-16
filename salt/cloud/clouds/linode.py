@@ -8,10 +8,10 @@ The Linode cloud module is used to control access to the Linode VPS system.
 Use of this module only requires the ``apikey`` parameter. However, the default root password for new instances
 also needs to be set. The password needs to be 8 characters and contain lowercase, uppercase, and numbers.
 
-You can target a specific version of the Linode API with the ``apiversion`` parameter. The default is ``v3``.
+You can target a specific version of the Linode API with the ``api_version`` parameter. The default is ``v3``.
 
 Note: APIv3 usage is deprecated and will be removed in a future release in favor of APIv4. To move to APIv4 now,
-set the ``apiversion`` parameter in your provider configuration to ``v4``.
+set the ``api_version`` parameter in your provider configuration to ``v4``.
 
 Set up the cloud configuration at ``/etc/salt/cloud.providers`` or ``/etc/salt/cloud.providers.d/linode.conf``:
 
@@ -158,12 +158,14 @@ def _get_api_key():
     """
     Returned the configured Linode API key.
     """
-    return config.get_cloud_config_value(
+    val = config.get_cloud_config_value(
         "api_key", get_configured_provider(), __opts__, search_global=False,
         default=config.get_cloud_config_value(
             "apikey", get_configured_provider(), __opts__, search_global=False
         ),
     )
+    print(val)
+    return val
 
 
 def _get_ratelimit_sleep():
@@ -180,7 +182,7 @@ def _get_max_retries():
     Return the configured max retry attempts on API requests.
     """
     return config.get_cloud_config_value(
-        "max_retries", get_configured_provider(), __opts__, search_global=False
+        "max_retries", get_configured_provider(), __opts__, search_global=False, default=10
     )
 
 
@@ -389,7 +391,7 @@ class LinodeAPIv4(LinodeAPI):
         """
         Make a call to the Linode API.
         """
-        apiversion = _get_api_version()
+        api_version = _get_api_version()
         api_key = _get_api_key()
         max_retries = _get_max_retries()
         ratelimit_sleep = _get_ratelimit_sleep()
@@ -399,7 +401,7 @@ class LinodeAPIv4(LinodeAPI):
         headers['Authorization'] = 'Bearer {}'.format(api_key)
         headers['Content-Type'] = 'application/json'
 
-        url = 'https://api.linode.com/{}{}'.format(apiversion, path)
+        url = 'https://api.linode.com/{}{}'.format(api_version, path)
 
         decode = method != 'DELETE'
         result = None
