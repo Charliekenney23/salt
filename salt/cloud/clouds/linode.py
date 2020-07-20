@@ -164,7 +164,6 @@ def _get_api_key():
             "apikey", get_configured_provider(), __opts__, search_global=False
         ),
     )
-    print(val)
     return val
 
 
@@ -361,7 +360,6 @@ class LinodeAPI():
         """ _get_linode_by_id implementation """
 
     def get_linode(self, kwargs=None):
-        print("in get_linode", kwargs, "api version", _get_api_version())
         name = kwargs.get("name", None)
         linode_id = kwargs.get("linode_id", None)
 
@@ -589,7 +587,6 @@ class LinodeAPIv4(LinodeAPI):
         )
 
         log.info("Creating Cloud VM %s", name)
-        print('about to create')
 
         result = None
 
@@ -640,7 +637,6 @@ class LinodeAPIv4(LinodeAPI):
                 params["swap_size"] = swap_size
 
             result = self._query("/linode/instances", method="POST", data=params)
-            print('result', result)
 
         linode_id = result.get("id", None)
 
