@@ -1127,7 +1127,7 @@ class LinodeAPIv4(LinodeAPI):
 
                 return self._poll(
                     "event {} to be '{}'".format(event_id, status),
-                    lambda: self.query("/account/event/{}".format(event_id)),
+                    lambda: self._query("/account/event/{}".format(event_id)),
                     condition,
                     timeout=timeout
                 )
