@@ -1099,8 +1099,8 @@ class LinodeAPIv4(LinodeAPI):
         while True:
             if last_event is not None:
                 event_filter["+gte"] = last_event
-            filter_header = json.dumps(event_filter, separators=(",", ":"))
-            result = self._query("/account/events", headers={"X-Filter": event_filter})
+            filter_json = json.dumps(event_filter, separators=(",", ":"))
+            result = self._query("/account/events", headers={"X-Filter": filter_json})
             events = result.get("data", [])
 
             if len(events) == 0:
