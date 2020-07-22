@@ -1010,7 +1010,7 @@ class LinodeAPIv4(LinodeAPI):
         description,
         getter,
         condition,
-        timeout=120,
+        timeout=None,
         poll_interval=None,
     ):
         """
@@ -1018,6 +1018,9 @@ class LinodeAPIv4(LinodeAPI):
         """
         if poll_interval is None:
             poll_interval = _get_poll_interval()
+
+        if timeout is None:
+            timeout = 120
 
         times = (timeout * 1000) / poll_interval
         curr = 0
