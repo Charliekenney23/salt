@@ -59,18 +59,19 @@ import re
 import time
 import abc
 import ipaddress
+import json
 from pathlib import Path
 
 # Import Salt Libs
 import salt.config as config
+from salt.ext import six
+from salt.ext.six.moves import range
 from salt.exceptions import (
     SaltCloudConfigError,
     SaltCloudException,
     SaltCloudNotFound,
     SaltCloudSystemExit,
 )
-from salt.ext import six
-from salt.ext.six.moves import range
 
 try:
     import requests
@@ -81,6 +82,8 @@ except ImportError:
 
 # Get logging started
 log = logging.getLogger(__name__)
+
+HAS_WARNED_FOR_API_V3 = False
 
 # The epoch of the last time a query was made
 LASTCALL = int(time.mktime(datetime.datetime.now().timetuple()))
@@ -282,6 +285,48 @@ def _get_ssh_interface(vm_):
     )
 
 
+def _validate_name(name):
+    """
+    Checks if the provided name fits Linode's labeling parameters.
+
+    .. versionadded:: 2015.5.6
+
+    name
+        The VM name to validate
+    """
+    name = six.text_type(name)
+    name_length = len(name)
+    regex = re.compile(r"^[a-zA-Z0-9][A-Za-z0-9_-]*[a-zA-Z0-9]$")
+
+    if name_length < 3 or name_length > 48:
+        ret = False
+    elif not re.match(regex, name):
+        ret = False
+    else:
+        ret = True
+
+    if ret is False:
+        log.warning(
+            "A Linode label may only contain ASCII letters or numbers, dashes, and "
+            "underscores, must begin and end with letters or numbers, and be at least "
+            "three characters in length."
+        )
+
+    return ret
+
+
+def _warn_for_api_v3():
+    global HAS_WARNED_FOR_API_V3
+
+    if not HAS_WARNED_FOR_API_V3:
+        log.warning(
+            "Linode APIv3 has been deprecated and support will be removed "
+            "in future releases. Please plan to upgrade to APIv4. For more "
+            "information, see https://docs.saltstack.com/en/latest/topics/cloud/linode.html#migrating-to-apiv4."
+        )
+        HAS_WARNED_FOR_API_V3 = True
+
+
 class LinodeAPI():
     @abc.abstractmethod
     def avail_images(self):
@@ -447,9 +492,9 @@ class LinodeAPIv4(LinodeAPI):
                         errors = []
                         for error in err_data["errors"]:
                             if "field" in error:
-                                errors.push("field '{}': {}".format(errors.get("field"), errors.get("reason")))
+                                errors.append("field '{}': {}".format(errors.get("field"), errors.get("reason")))
                             else:
-                                errors.push(errors.get("reason"))
+                                errors.append(errors.get("reason"))
 
                         raise SaltCloudSystemExit("Linode API reported error(s): {}".format(", ".join(errors)))
 
@@ -658,7 +703,7 @@ class LinodeAPIv4(LinodeAPI):
                     "Disk must be allocated for the root disk partition"
                 )
 
-            self._wait_for_linode_status(linode_id, "offline")
+            self._wait_for_event("linode_create", "linode", linode_id, "finished")
 
             swap_disk = None
             if swap_size != 0:
@@ -960,33 +1005,52 @@ class LinodeAPIv4(LinodeAPI):
         self._wait_for_disk_status(linode_id, disk_id, "ready")
         return disk
 
+    def _poll(
+        self,
+        description,
+        getter,
+        condition,
+        timeout=120,
+        poll_interval=None,
+    ):
+        """
+        Return true in handler to signal complete.
+        """
+        times = (timeout * 1000) / poll_interval
+        curr = 0
+
+        if poll_interval is None:
+            poll_interval = _get_poll_interval()
+
+        while True:
+            curr += 1
+            result = getter()
+            if condition(result):
+                return True
+            elif curr <= times:
+                time.sleep(poll_interval / 1000)
+                log.info("retrying: polling for %s...", description)
+            else:
+                raise SaltCloudException(
+                    "Timedout polling for {}".format(description)
+                )
+
     def _wait_for_entity_status(
         self,
         getter,
         status,
         entity_name="item",
         identifier="some",
-        timeout=120
+        timeout=None
     ):
-        poll_interval = _get_poll_interval()
-        times = (timeout * 1000) / poll_interval
-        curr = 1
+        return self._poll(
+            "{} (id={}) status to be '{}'".format(entity_name, identifier, status),
+            getter,
+            lambda item: item.get("status") == status,
+            timeout=timeout
+        )
 
-        while True:
-            result = getter()
-            current_status = result.get("status", None)
-
-            if current_status == status:
-                return result
-            elif curr <= times:
-                time.sleep(poll_interval / 1000)
-                log.info("waiting for %s %d status to be '%s'...", entity_name, identifier, status)
-            else:
-                raise SaltCloudException(
-                    "timed out while waiting for {} {} to reach status {}.".format(entity_name, identifier, status)
-                )
-
-    def _wait_for_disk_status(self, linode_id, disk_id, status, timeout=120):
+    def _wait_for_disk_status(self, linode_id, disk_id, status, timeout=None):
         return self._wait_for_entity_status(
             lambda: self._query("/linode/instances/{}/disk/{}".format(linode_id, disk_id)),
             status,
@@ -994,13 +1058,76 @@ class LinodeAPIv4(LinodeAPI):
             identifier="{}/{}".format(linode_id, disk_id),
             timeout=timeout)
 
-    def _wait_for_linode_status(self, linode_id, status, timeout=120):
+    def _wait_for_linode_status(self, linode_id, status, timeout=None):
         return self._wait_for_entity_status(
             lambda: self._get_linode_by_id(linode_id),
             status,
             entity_name="linode",
             identifier=linode_id,
             timeout=timeout)
+
+    def _check_event_status(self, event, desired_status):
+        status = event.get("status")
+        action = event.get("action")
+        entity = event.get("entity")
+        if status == "failed":
+            raise SaltCloudSystemExit(
+                "event {} for {} (id={}) failed".format(action, entity["type"], entity["id"])
+            )
+        return status == desired_status
+
+    def _wait_for_event(
+        self,
+        action,
+        entity,
+        entity_id,
+        status,
+        timeout=None
+    ):
+        event_filter = {
+            "+order_by": "created",
+            "+order": "desc",
+            "seen": False,
+            "action": action,
+            "pages": 1,
+            "entity.id": entity_id,
+            "entity.type": entity,
+        }
+        last_event = None
+        condition = lambda event: self._check_event_status(event, status)
+
+        while True:
+            if last_event is not None:
+                event_filter["+gte"] = last_event
+            filter_header = json.dumps(event_filter, separators=(",", ":"))
+            result = self._query("/account/events", headers={"X-Filter": event_filter})
+            events = result.get("data", [])
+
+            if len(events) == 0:
+                break
+
+            for event in events:
+                event_id = event.get("id")
+                event_entity = event.get("entity", None)
+                last_event = event_id
+                if not event_entity:
+                    continue
+
+                if not (event_entity["type"] == entity and event_entity["id"] != entity_id
+                    and event.get("action") != action):
+                    continue
+
+                if condition(event):
+                    return True
+
+                return self._poll(
+                    "event {} to be '{}'".format(event_id, status),
+                    lambda: self.query("/account/event/{}".format(event_id)),
+                    condition,
+                    timeout=timeout
+                )
+
+        return False
 
     def _get_response_json(self, response):
         json = None
@@ -1013,11 +1140,7 @@ class LinodeAPIv4(LinodeAPI):
 
 class LinodeAPIv3(LinodeAPI):
     def __init__(self):
-        log.warning(
-            "Linode APIv3 has been deprecated and support will be removed "
-            "in future releases. Please plan to upgrade to APIv4. For more "
-            "information, see https://saltstack.com"
-        )
+        _warn_for_api_v3()
 
     def _query(
         self,
@@ -2479,33 +2602,3 @@ def stop(name, call=None):
     if call != "action":
         raise SaltCloudException("The stop action must be called with -a or --action.")
     return _get_cloud_interface().stop(name)
-
-
-def _validate_name(name):
-    """
-    Checks if the provided name fits Linode's labeling parameters.
-
-    .. versionadded:: 2015.5.6
-
-    name
-        The VM name to validate
-    """
-    name = six.text_type(name)
-    name_length = len(name)
-    regex = re.compile(r"^[a-zA-Z0-9][A-Za-z0-9_-]*[a-zA-Z0-9]$")
-
-    if name_length < 3 or name_length > 48:
-        ret = False
-    elif not re.match(regex, name):
-        ret = False
-    else:
-        ret = True
-
-    if ret is False:
-        log.warning(
-            "A Linode label may only contain ASCII letters or numbers, dashes, and "
-            "underscores, must begin and end with letters or numbers, and be at least "
-            "three characters in length."
-        )
-
-    return ret
