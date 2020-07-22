@@ -1034,7 +1034,7 @@ class LinodeAPIv4(LinodeAPI):
                 log.info("retrying: polling for %s...", description)
             else:
                 raise SaltCloudException(
-                    "Timedout polling for {}".format(description)
+                    "timed out: polling for {}".format(description)
                 )
 
     def _wait_for_entity_status(
@@ -1100,7 +1100,7 @@ class LinodeAPIv4(LinodeAPI):
 
         while True:
             if last_event is not None:
-                event_filter["+gte"] = last_event
+                event_filter["+gt"] = last_event
             filter_json = json.dumps(event_filter, separators=(",", ":"))
             result = self._query("/account/events", headers={"X-Filter": filter_json})
             events = result.get("data", [])
@@ -1115,8 +1115,8 @@ class LinodeAPIv4(LinodeAPI):
                 if not event_entity:
                     continue
 
-                if not (event_entity["type"] == entity and event_entity["id"] != entity_id
-                    and event.get("action") != action):
+                if not (event_entity["type"] == entity and event_entity["id"] == entity_id
+                    and event.get("action") == action):
                     continue
 
                 if condition(event):
