@@ -1057,7 +1057,7 @@ class LinodeAPIv4(LinodeAPI):
 
     def _wait_for_disk_status(self, linode_id, disk_id, status, timeout=None):
         return self._wait_for_entity_status(
-            lambda: self._query("/linode/instances/{}/disk/{}".format(linode_id, disk_id)),
+            lambda: self._query("/linode/instances/{}/disks/{}".format(linode_id, disk_id)),
             status,
             entity_name="instance disk",
             identifier="{}/{}".format(linode_id, disk_id),
