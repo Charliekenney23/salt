@@ -1089,7 +1089,6 @@ class LinodeAPIv4(LinodeAPI):
             "+order": "desc",
             "seen": False,
             "action": action,
-            "pages": 1,
             "entity.id": entity_id,
             "entity.type": entity,
         }
