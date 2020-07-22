@@ -707,10 +707,10 @@ class LinodeAPIv4(LinodeAPI):
 
             swap_disk = None
             if swap_size != 0:
-                self._create_disk(linode_id, size=swap_size, filesystem="swap")
+                self._create_disk(linode_id, label="Swap Disk", size=swap_size, filesystem="swap")
 
             data_disk = self._create_disk(
-                linode_id, size=root_disk_size, filesystem="ext4",
+                linode_id, label="Data Disk", size=root_disk_size, filesystem="ext4",
                 image=image, authorized_keys=pub_ssh_keys, root_pass=password)
 
             self.create_config(kwargs={
