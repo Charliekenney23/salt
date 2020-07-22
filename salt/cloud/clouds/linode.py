@@ -492,9 +492,9 @@ class LinodeAPIv4(LinodeAPI):
                         errors = []
                         for error in err_data["errors"]:
                             if "field" in error:
-                                errors.append("field '{}': {}".format(errors.get("field"), errors.get("reason")))
+                                errors.append("field '{}': {}".format(error.get("field"), error.get("reason")))
                             else:
-                                errors.append(errors.get("reason"))
+                                errors.append(error.get("reason"))
 
                         raise SaltCloudSystemExit("Linode API reported error(s): {}".format(", ".join(errors)))
 
