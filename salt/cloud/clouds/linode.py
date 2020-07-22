@@ -1025,7 +1025,9 @@ class LinodeAPIv4(LinodeAPI):
         while True:
             curr += 1
             result = getter()
-            if condition(result):
+            success = condition(result)
+            print("result={}; success={}".format(result, success))
+            if success:
                 return True
             elif curr <= times:
                 time.sleep(poll_interval / 1000)
@@ -1074,6 +1076,7 @@ class LinodeAPIv4(LinodeAPI):
             raise SaltCloudSystemExit(
                 "event {} for {} (id={}) failed".format(action, entity["type"], entity["id"])
             )
+        print("desired_status={}; status={}; action={}; match={}".format(desired_status, status, action, status == desired_status))
         return status == desired_status
 
     def _wait_for_event(
