@@ -717,8 +717,8 @@ class LinodeAPIv4(LinodeAPI):
         self._wait_for_event("linode_create", "linode", linode_id, "finished")
         log.debug("linode '%s' has been created", name)
 
-        # boot the linode
-        self.boot(kwargs={"linode_id": linode_id})
+        # wait for linode to finish booting
+        self._wait_for_linode_status(linode_id, 'running')
 
         public_ips, private_ips = self._get_ips(linode_id)
 
