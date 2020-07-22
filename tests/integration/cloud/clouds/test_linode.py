@@ -46,10 +46,7 @@ class LinodeTest(CloudTest):
         return ret_str
 
     def test_instance(self):
-        return self._test_instance('nanodev3')
+        return self._test_instance("nanodev3")
 
     def test_instance_v4(self):
-        return self._test_instance('nanodev4')
-
-    def test_instance_with_explicit_disk(self):
-        return self._test_instance("with_explicit_disk")
+        return self._test_instance("nanodev4")

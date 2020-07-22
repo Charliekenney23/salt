@@ -1,52 +1,102 @@
 # -*- coding: utf-8 -*-
 """
-Linode Cloud Module using Linode's REST API
-===========================================
+The Linode Cloud Module
+=======================
 
-The Linode cloud module is used to control access to the Linode VPS system.
-
-Use of this module only requires the ``apikey`` parameter. However, the default root password for new instances
-also needs to be set. The password needs to be 8 characters and contain lowercase, uppercase, and numbers.
+The Linode cloud module is used to interact with the Linode Cloud.
 
 You can target a specific version of the Linode API with the ``api_version`` parameter. The default is ``v3``.
 
-Note: APIv3 usage is deprecated and will be removed in a future release in favor of APIv4. To move to APIv4 now,
-set the ``api_version`` parameter in your provider configuration to ``v4``.
+Provider
+--------
 
-Set up the cloud configuration at ``/etc/salt/cloud.providers`` or ``/etc/salt/cloud.providers.d/linode.conf``:
+The following provider parameters are supported:
+
+- **apikey**: (required) The key to use to authenticate with the Linode API.
+- **password**: (required) The default password to set on new VMs. Must be 8 characters with at least one lowercase, uppercase, and numeric.
+- **api_version**: (optional) The version of the Linode API to interact with. (Defaults to ``v3``)
+- **poll_interval**: (optional) The rate of time in milliseconds to poll the Linode API for changes. (Defaults to ``500``)
+- **ratelimit_sleep**: (optional) The time in seconds to wait before retrying after a ratelimit has been enforced. (Defaults to ``0``)
+
+.. note::
+
+    APIv3 usage is deprecated and will be removed in a future release in favor of APIv4. To move to APIv4 now,
+    set the ``api_version`` parameter in your provider configuration to ``v4``. See the full migration guide
+    here https://docs.saltstack.com/en/latest/topics/cloud/linode.html#migrating-to-apiv4.
+
+Set up the provider configuration at ``/etc/salt/cloud.providers`` or ``/etc/salt/cloud.providers.d/linode.conf``:
 
 .. code-block:: yaml
     my-linode-provider:
         driver: linode
         api_version: v4
-        api_key: f4ZsmwtB1c7f85Jdu43RgXVDFlNjuJaeIYV8QMftTqKScEB2vSosFSr...
+        apikey: f4ZsmwtB1c7f85Jdu43RgXVDFlNjuJaeIYV8QMftTqKScEB2vSosFSr...
         password: F00barbaz
-        ssh_key_files:
-          - ~/.ssh/id_rsa.pub
-
-    linode-profile:
-        provider: my-linode-provider
-        size: g6-standard-1
-        image: linode/centos7
-        location: eu-west
 
 For use with APIv3 (deprecated):
 
 .. code-block:: yaml
-    my-linode-provider:
+    my-linode-provider-v3:
+        driver: linode
         apikey: f4ZsmwtB1c7f85Jdu43RgXVDFlNjuJaeIYV8QMftTqKScEB2vSosFSr...
         password: F00barbaz
-        driver: linode
 
-    linode-profile:
+Profile
+-------
+
+The following profile parameters are supported:
+
+- **size**: (required) The size of the VM. This should be a Linode instance type ID (i.e. ``g6-standard-2``). For APIv3, this would be a plan ID (i.e. ``Linode 2GB``). Run ``salt-cloud -f avail_sizes my-linode-provider`` for options.
+- **location**: (required) The location of the VM. This should be a Linode region (e.g. ``us-east``). For APIv3, this would be a datacenter location (i.e. ``Newark, NJ, USA``). Run ``salt-cloud -f avail_locations my-linode-provider`` for options.
+- **image**: (required) The image to deploy the boot disk from. This should be an image ID (e.g. ``linode/ubuntu16.04``); official images start with ``linode/``. For APIv3, this would be an image label (i.e. Ubuntu 16.04). Run ``salt-cloud -f avail_images my-linode-provider`` for more options.
+- **password**: (*required) The default password for the VM. Must be provided at the profile or provider level.
+- **assign_private_ip**: (optional) Whether or not to assign a private key to the VM. (Defaults to ``False``)
+- **ssh_interface**: (optional) The interface with which to connect over SSH. Valid options are ``private_ips`` or ``public_ips``. (Defaults to ``public_ips``)
+- **ssh_pubkey**: (optional) The public key to authorize for SSH with the VM.
+- **swap_size**: (optional) The amount of disk space to allocate for the swap partition. (Defaults to ``256``)
+- **disk_size**: (deprecated, optional) The amount of disk space to allocate for the OS disk. This has no effect with APIv4; the size of the boot disk will be the remainder of disk space after the swap parition is allocated.
+
+Set up a profile configuration in ``/etc/salt/cloud.profiles.d/``:
+
+.. code-block:: yaml
+    my-linode-profile:
+        # a minimal configuration
         provider: my-linode-provider
-        size: Linode 1024
-        image: CentOS 7
-        location: London, England, UK
+        size: g6-standard-1
+        image: linode/alpine3.12
+        location: us-east
 
+    my-linode-profile-advanced:
+        # an advanced configuration
+        provider: my-linode-provider
+        size: g6-standard-3
+        image: linode/alpine3.10
+        location: eu-west
+        password: bogus123X
+        assign_private_ip: true
+        ssh_interface: private_ips
+        ssh_pubkey: ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB...
+        swap_size: 512
+
+    my-linode-profile-v3:
+        # a legacy configuration
+        provider: my-linode-provider-v3
+        size: Nanode 1GB
+        image: Alpine 3.12
+        location: Fremont, CA, USA
+
+Migrating to APIv4
+------------------
+
+In order to target APIv4, ensure your provider configuration has ``api_version`` set to ``v4``.
+
+There are a few changes to note:
+- There has been a general move from label references to ID references. The profile configuration parameters ``location``, ``size``, and ``image`` have moved from being label based references to IDs. See the profile section for more information. In addition to these inputs being changed, ``avail_sizes``, ``avail_locations``, and ``avail_images`` now output options sorted by ID instead of label.
+- The ``disk_size`` profile configuration parameter has been deprecated and will not be taken into account when creating new VMs while targeting APIv3.
 
 :maintainer: Charles Kenney <ckenney@linode.com>
 :maintainer: Phillip Campbell <pcampbell@linode.com>
+:depends: requests
 """
 
 # Import Python Libs
@@ -176,15 +226,6 @@ def _get_ratelimit_sleep():
     """
     return config.get_cloud_config_value(
         "ratelimit_sleep", get_configured_provider(), __opts__, search_global=False, default=0,
-    )
-
-
-def _get_max_retries():
-    """
-    Return the configured max retry attempts on API requests.
-    """
-    return config.get_cloud_config_value(
-        "max_retries", get_configured_provider(), __opts__, search_global=False, default=10
     )
 
 
@@ -436,7 +477,6 @@ class LinodeAPIv4(LinodeAPI):
         """
         api_version = _get_api_version()
         api_key = _get_api_key()
-        max_retries = _get_max_retries()
         ratelimit_sleep = _get_ratelimit_sleep()
 
         if headers is None:
@@ -470,23 +510,17 @@ class LinodeAPIv4(LinodeAPI):
                 err_data = self._get_response_json(err_response)
                 status_code = err_response.status_code
 
+                if status_code == 429:
+                    log.debug("recieved rate limit; retrying in %d seconds", ratelimit_sleep)
+                    time.sleep(ratelimit_sleep)
+                    continue
+
                 if err_data is not None:
                     # Build an error from the response JSON
                     if "error" in err_data:
                         raise SaltCloudSystemExit("Linode API reported error: {}".format(err_data["error"]))
                     elif "errors" in err_data:
                         api_errors = err_data["errors"]
-
-                        can_retry = attempt <= max_retries
-                        linode_busy_err = len(api_errors) == 1 and api_errors[0].get("reason") == LINODE_BUSY_REASON
-
-                        # Retry Linode Busy/transient HTTP errors
-                        if can_retry and linode_busy_err:
-                            log.debug("Got 'Linode Busy' (attempt %d/%d); retrying in %d seconds...",
-                                attempt, max_retries, ratelimit_sleep)
-                            time.sleep(ratelimit_sleep)
-                            attempt += 1
-                            continue
 
                         # Build Salt exception
                         errors = []
@@ -641,13 +675,10 @@ class LinodeAPIv4(LinodeAPI):
         assign_private_ip = _get_private_ip(vm_) or use_private_ip
         password = _get_password(vm_)
         swap_size = _get_swap_size(vm_)
-        root_disk_size = _get_root_disk_size(vm_)
 
         clonefrom_name = vm_.get("clonefrom", None)
         instance_type = vm_.get("size", None)
         image = vm_.get("image", None)
-
-        implicit_data_disk = root_disk_size is None
         should_clone = True if clonefrom_name else False
 
         if should_clone:
@@ -668,63 +699,26 @@ class LinodeAPIv4(LinodeAPI):
                 })
         else:
             # create new linode
-            params = {
+            result = self._query("/linode/instances", method="POST", data={
                 "label": name,
                 "type": instance_type,
                 "region": vm_.get("location", None),
                 "private_ip": assign_private_ip,
-                "booted": implicit_data_disk,
-            }
-            if implicit_data_disk:
-                params["root_pass"] = password
-                params["authorized_keys"] = pub_ssh_keys
-                params["image"] = image
-                params["swap_size"] = swap_size
-
-            result = self._query("/linode/instances", method="POST", data=params)
+                "booted": True,
+                "root_pass": password,
+                "authorized_keys": pub_ssh_keys,
+                "image": image,
+                "swap_size": swap_size
+            })
 
         linode_id = result.get("id", None)
 
-        # create declared disks if needed
-        if not should_clone and not implicit_data_disk:
-            instance_spec = self._get_linode_type(instance_type)
-            disk_size = instance_spec.get("disk", 0)
+        # wait for linode to be created
+        self._wait_for_event("linode_create", "linode", linode_id, "finished")
+        log.debug("linode '%s' has been created", name)
 
-            if not root_disk_size:
-                root_disk_size = disk_size - swap_size
-
-            if root_disk_size + swap_size > disk_size:
-                raise SaltCloudException(
-                    "Insufficient space available for type '{}' ({})".format(instance_type, disk_size)
-                )
-
-            if root_disk_size <= 0:
-                raise SaltCloudException(
-                    "Disk must be allocated for the root disk partition"
-                )
-
-            self._wait_for_event("linode_create", "linode", linode_id, "finished")
-
-            swap_disk = None
-            if swap_size != 0:
-                self._create_disk(linode_id, label="Swap Disk", size=swap_size, filesystem="swap")
-
-            data_disk = self._create_disk(
-                linode_id, label="Data Disk", size=root_disk_size, filesystem="ext4",
-                image=image, authorized_keys=pub_ssh_keys, root_pass=password)
-
-            self.create_config(kwargs={
-                "name": "Default Config",
-                "linode_id": linode_id,
-                "data_disk_id": data_disk["id"],
-                "swap_disk_id": swap_disk["id"] if swap_disk else None
-            })
-
-            # boot linode
-            self.boot(kwargs={"linode_id": linode_id, "check_running": False})
-
-        # wait for linode to be booted
-        self._wait_for_linode_status(linode_id, "running")
+        # boot the linode
+        self.boot(kwargs={"linode_id": linode_id})
 
         public_ips, private_ips = self._get_ips(linode_id)
 
@@ -980,31 +974,6 @@ class LinodeAPIv4(LinodeAPI):
 
         return (public, private)
 
-    def _create_disk(
-        self,
-        linode_id,
-        size=None,
-        label=None,
-        authorized_keys=None,
-        filesystem=None,
-        image=None,
-        root_pass=None
-    ):
-        disk = self._query("/linode/instances/{}/disks".format(linode_id),
-            method="POST",
-            data={
-                "size": size,
-                "label": label,
-                "authorized_keys": authorized_keys,
-                "filesystem": filesystem,
-                "image": image,
-                "root_pass": root_pass,
-            })
-        disk_id = disk.get("id", None)
-
-        self._wait_for_disk_status(linode_id, disk_id, "ready")
-        return disk
-
     def _poll(
         self,
         description,
@@ -1028,9 +997,7 @@ class LinodeAPIv4(LinodeAPI):
         while True:
             curr += 1
             result = getter()
-            success = condition(result)
-            log.debug("result={}; success={}".format(result, success))
-            if success:
+            if condition(result):
                 return True
             elif curr <= times:
                 time.sleep(poll_interval / 1000)
@@ -1055,14 +1022,6 @@ class LinodeAPIv4(LinodeAPI):
             timeout=timeout
         )
 
-    def _wait_for_disk_status(self, linode_id, disk_id, status, timeout=None):
-        return self._wait_for_entity_status(
-            lambda: self._query("/linode/instances/{}/disks/{}".format(linode_id, disk_id)),
-            status,
-            entity_name="instance disk",
-            identifier="{}/{}".format(linode_id, disk_id),
-            timeout=timeout)
-
     def _wait_for_linode_status(self, linode_id, status, timeout=None):
         return self._wait_for_entity_status(
             lambda: self._get_linode_by_id(linode_id),
@@ -1075,7 +1034,6 @@ class LinodeAPIv4(LinodeAPI):
         status = event.get("status")
         action = event.get("action")
         entity = event.get("entity")
-        log.debug("desired_status={}; status={}; action={}; match={}".format(desired_status, status, action, status == desired_status))
         if status == "failed":
             raise SaltCloudSystemExit(
                 "event {} for {} (id={}) failed".format(action, entity["type"], entity["id"])
