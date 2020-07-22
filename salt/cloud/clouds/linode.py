@@ -1016,11 +1016,11 @@ class LinodeAPIv4(LinodeAPI):
         """
         Return true in handler to signal complete.
         """
-        times = (timeout * 1000) / poll_interval
-        curr = 0
-
         if poll_interval is None:
             poll_interval = _get_poll_interval()
+
+        times = (timeout * 1000) / poll_interval
+        curr = 0
 
         while True:
             curr += 1
