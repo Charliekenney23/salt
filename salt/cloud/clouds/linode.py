@@ -53,7 +53,8 @@ The following profile parameters are supported:
 - **assign_private_ip**: (optional) Whether or not to assign a private key to the VM. (Defaults to ``False``)
 - **ssh_interface**: (optional) The interface with which to connect over SSH. Valid options are ``private_ips`` or ``public_ips``. (Defaults to ``public_ips``)
 - **ssh_pubkey**: (optional) The public key to authorize for SSH with the VM.
-- **swap_size**: (optional) The amount of disk space to allocate for the swap partition. (Defaults to ``256``)
+- **swap**: (optional) The amount of disk space to allocate for the swap partition. (Defaults to ``256``)
+- **clonefrom**: (optional) The name of the Linode to clone from.
 - **disk_size**: (deprecated, optional) The amount of disk space to allocate for the OS disk. This has no effect with APIv4; the size of the boot disk will be the remainder of disk space after the swap parition is allocated.
 
 Set up a profile configuration in ``/etc/salt/cloud.profiles.d/``:
@@ -295,6 +296,16 @@ def _get_ssh_key(vm_):
     )
 
 
+def _get_swap_size(vm_):
+    r"""
+    Returns the amount of swap space to be used in MB.
+
+    vm\_
+        The VM profile to obtain the swap size from.
+    """
+    return config.get_cloud_config_value("swap", vm_, __opts__, default=256)
+
+
 def _get_ssh_keys(vm_):
     """
     Return all SSH keys from ``ssh_pubkey`` and ``ssh_key_files``.
@@ -444,6 +455,10 @@ class LinodeAPI():
     @abc.abstractmethod
     def _get_linode_by_id(self, linode_id):
         """ _get_linode_by_id implementation """
+
+    def get_plan_id(self, kwargs=None):
+        """ get_plan_id implementation """
+        raise SaltCloudSystemExit('The get_plan_id is not supported by this api_version.')
 
     def get_linode(self, kwargs=None):
         name = kwargs.get("name", None)
@@ -716,6 +731,9 @@ class LinodeAPIv4(LinodeAPI):
         # wait for linode to be created
         self._wait_for_event("linode_create", "linode", linode_id, "finished")
         log.debug("linode '%s' has been created", name)
+
+        if should_clone:
+            self.boot(kwargs={"linode_id": linode_id})
 
         # wait for linode to finish booting
         self._wait_for_linode_status(linode_id, 'running')
@@ -2357,28 +2375,14 @@ def get_plan_id(kwargs=None, call=None):
 
     .. code-block:: bash
 
-        salt-cloud -f get_plan_id linode label="Linode 1024"
+        salt-cloud -f get_plan_id linode label="Nanode 1GB"
+        salt-cloud -f get_plan_id linode label="Linode 2GB"
     """
     if call == "action":
         raise SaltCloudException(
             "The show_instance action must be called with -f or --function."
         )
-
-    if _get_api_version() != 'v3':
-        SaltCloudSystemExit('The get_plan_id is not supported by this api_version.')
-
-    log.warning('The get_plan_id function is deprecated and will be removed in future releases.')
-    return LinodeAPIv3().get_plan_id(kwargs=kwargs)
-
-
-def _get_swap_size(vm_):
-    r"""
-    Returns the amount of swap space to be used in MB.
-
-    vm\_
-        The VM profile to obtain the swap size from.
-    """
-    return config.get_cloud_config_value("swap", vm_, __opts__, default=256)
+    return _get_cloud_interface().get_plan_id(kwargs=kwargs)
 
 
 def list_nodes(call=None):
